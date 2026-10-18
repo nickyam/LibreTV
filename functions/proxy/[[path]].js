@@ -19,6 +19,75 @@ const MEDIA_CONTENT_TYPES = ['video/', 'audio/', 'image/'];
 // --- 常量结束 ---
 
 
+// --- 安全防护：防开放代理 / SSRF ---
+
+// 从 URL 字符串取主机名（小写、去端口）
+function getHostname(urlStr) {
+    try { return new URL(urlStr).hostname.toLowerCase(); }
+    catch { return ''; }
+}
+
+// 判断主机名是否为内网/本机/链路本地/云元数据等禁止代理的目标
+function isBlockedHost(hostname) {
+    if (!hostname) return true;
+    const h = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    if (h === 'localhost' || h.endsWith('.localhost')) return true;
+    if (h === 'metadata.google.internal' || h === 'metadata') return true;
+    // IPv4 字面量
+    const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+    if (m) {
+        const ip = m.slice(1).map(Number);
+        if (ip.some(o => o > 255)) return true;
+        const [a, b] = ip;
+        if (a === 0) return true;                              // 0.0.0.0/8
+        if (a === 127) return true;                            // 127.0.0.0/8 回环
+        if (a === 10) return true;                             // 10.0.0.0/8 私网
+        if (a === 172 && b >= 16 && b <= 31) return true;      // 172.16.0.0/12 私网
+        if (a === 192 && b === 168) return true;               // 192.168.0.0/16 私网
+        if (a === 169 && b === 254) return true;               // 169.254.0.0/16 链路本地+云元数据
+        if (a === 100 && b >= 64 && b <= 127) return true;     // 100.64.0.0/10 CGNAT
+        return false;
+    }
+    // IPv6 字面量
+    if (h === '::1' || h === '::') return true;
+    if (h.startsWith('fe80')) return true;                     // 链路本地
+    if (h.startsWith('fc') || h.startsWith('fd')) return true; // 唯一本地
+    return false;
+}
+
+// 读取允许的来源主机白名单；返回 null 表示关闭校验（允许全部）
+function getAllowedHosts(env) {
+    const raw = (env.PROXY_ALLOWED_HOSTS || '').trim();
+    if (raw === '*') return null; // 显式关闭（回退到旧行为）
+    let list;
+    if (raw) {
+        list = raw.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+    } else {
+        // 默认：本站域名 + 本地开发
+        list = ['tv.nickyam.com', 'www.nickyam.com', 'nickyam.com', 'localhost', '127.0.0.1'];
+    }
+    if (!list.includes('localhost')) list.push('localhost');
+    if (!list.includes('127.0.0.1')) list.push('127.0.0.1');
+    return new Set(list);
+}
+
+// 校验请求来源是否合法；返回 { ok, reason }
+function checkRefererAllowed(request, env) {
+    const allowed = getAllowedHosts(env);
+    if (allowed === null) return { ok: true }; // 已关闭校验
+    // 取 Referer，缺失时退回 Origin
+    const source = request.headers.get('Referer') || request.headers.get('Origin') || '';
+    if (!source) return { ok: false, reason: '缺少 Referer/Origin' };
+    let host;
+    try { host = new URL(source).hostname.toLowerCase(); }
+    catch { return { ok: false, reason: 'Referer/Origin 无法解析' }; }
+    if (host === 'null' || host === '') return { ok: false, reason: 'Referer/Origin 为空' };
+    if (allowed.has(host)) return { ok: true };
+    return { ok: false, reason: `来源不在白名单: ${host}` };
+}
+// --- 安全防护结束 ---
+
+
 /**
  * 主要的 Pages Function 处理函数
  * 拦截发往 /proxy/* 的请求
@@ -26,6 +95,13 @@ const MEDIA_CONTENT_TYPES = ['video/', 'audio/', 'image/'];
 export async function onRequest(context) {
     const { request, env, next, waitUntil } = context; // next 和 waitUntil 可能需要
     const url = new URL(request.url);
+
+    // --- 防开放代理：仅允许本站页面发起的请求 ---
+    const refererGuard = checkRefererAllowed(request, env);
+    if (!refererGuard.ok) {
+        logDebug(`Referer 校验未通过: ${refererGuard.reason}`);
+        return createResponse("Forbidden: 非法来源", 403);
+    }
 
     // --- 从环境变量读取配置 ---
     const DEBUG_ENABLED = (env.DEBUG === 'true');
@@ -421,6 +497,12 @@ export async function onRequest(context) {
         if (!targetUrl) {
             logDebug(`无效的代理请求路径: ${url.pathname}`);
             return createResponse("无效的代理请求。路径应为 /proxy/<经过编码的URL>", 400);
+        }
+
+        // --- SSRF 防护：禁止代理访问内网/本机/链路本地/云元数据 ---
+        if (isBlockedHost(getHostname(targetUrl))) {
+            logDebug(`SSRF 拦截: ${targetUrl}`);
+            return createResponse("Forbidden: 目标地址不被允许", 403);
         }
 
         logDebug(`收到代理请求: ${targetUrl}`);
