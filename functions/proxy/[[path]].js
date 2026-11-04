@@ -250,13 +250,21 @@ export async function onRequest(context) {
 
     // 获取远程内容及其类型
     async function fetchContentWithType(targetUrl) {
+        // 豆瓣图片 CDN（imgX.doubanio.com）对跨站 Referer 与无 Referer 请求会返回 418/403，
+        // 必须以 movie.douban.com 作为 Referer 才能稳定返回 200。
+        // 其它目标沿用原逻辑：优先透传本站 Referer，缺失时回退到目标站点自身域名。
+        const targetHost = getHostname(targetUrl);
+        const referer = targetHost.endsWith('doubanio.com')
+            ? 'https://movie.douban.com/'
+            : (request.headers.get('Referer') || new URL(targetUrl).origin);
+
         const headers = new Headers({
             'User-Agent': getRandomUserAgent(),
             'Accept': '*/*',
             // 尝试传递一些原始请求的头信息
             'Accept-Language': request.headers.get('Accept-Language') || 'zh-CN,zh;q=0.9,en;q=0.8',
             // 尝试设置 Referer 为目标网站的域名，或者传递原始 Referer
-            'Referer': request.headers.get('Referer') || new URL(targetUrl).origin
+            'Referer': referer
         });
 
         try {
