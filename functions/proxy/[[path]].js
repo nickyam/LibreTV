@@ -248,7 +248,7 @@ export async function onRequest(context) {
         return `/proxy/${encodeURIComponent(targetUrl)}`;
     }
 
-    // 获取远程内容及其类型
+    // 获取远程内容及其类型（带退避重试，应对豆瓣图床等按频率/IP 限流的 403/418/429/500）
     async function fetchContentWithType(targetUrl) {
         // 豆瓣图片 CDN（imgX.doubanio.com）对跨站 Referer 与无 Referer 请求会返回 418/403，
         // 必须以 movie.douban.com 作为 Referer 才能稳定返回 200。
@@ -258,38 +258,46 @@ export async function onRequest(context) {
             ? 'https://movie.douban.com/'
             : (request.headers.get('Referer') || new URL(targetUrl).origin);
 
-        const headers = new Headers({
+        const buildHeaders = () => new Headers({
             'User-Agent': getRandomUserAgent(),
             'Accept': '*/*',
-            // 尝试传递一些原始请求的头信息
             'Accept-Language': request.headers.get('Accept-Language') || 'zh-CN,zh;q=0.9,en;q=0.8',
-            // 尝试设置 Referer 为目标网站的域名，或者传递原始 Referer
             'Referer': referer
         });
 
-        try {
-            // 直接请求目标 URL
-            logDebug(`开始直接请求: ${targetUrl}`);
-            // Cloudflare Functions 的 fetch 默认支持重定向
-            const response = await fetch(targetUrl, { headers, redirect: 'follow' });
+        const MAX_RETRIES = 3;
+        let lastErr;
+        for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+            try {
+                logDebug(`请求目标 (尝试 ${attempt + 1}/${MAX_RETRIES}): ${targetUrl}`);
+                const response = await fetch(targetUrl, { headers: buildHeaders(), redirect: 'follow' });
 
-            if (!response.ok) {
-                 const errorBody = await response.text().catch(() => '');
-                 logDebug(`请求失败: ${response.status} ${response.statusText} - ${targetUrl}`);
-                 throw new Error(`HTTP error ${response.status}: ${response.statusText}. URL: ${targetUrl}. Body: ${errorBody.substring(0, 150)}`);
+                if (!response.ok) {
+                    const errBody = await response.text().catch(() => '');
+                    lastErr = new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    logDebug(`上游返回 ${response.status}，准备退避重试: ${targetUrl}`);
+                    if (attempt < MAX_RETRIES - 1) {
+                        await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
+                        continue;
+                    }
+                    throw new Error(`HTTP error ${response.status}: ${response.statusText}. URL: ${targetUrl}. Body: ${errBody.substring(0, 150)}`);
+                }
+
+                const content = await response.text();
+                const contentType = response.headers.get('Content-Type') || '';
+                logDebug(`请求成功: ${targetUrl}, Content-Type: ${contentType}, 长度: ${content.length}`);
+                return { content, contentType, responseHeaders: response.headers };
+            } catch (error) {
+                lastErr = error;
+                logDebug(`请求异常 (尝试 ${attempt + 1}/${MAX_RETRIES}): ${targetUrl}: ${error.message}`);
+                if (attempt < MAX_RETRIES - 1) {
+                    await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
+                    continue;
+                }
+                throw new Error(`请求目标URL失败 ${targetUrl}: ${error.message}`);
             }
-
-            // 读取响应内容为文本
-            const content = await response.text();
-            const contentType = response.headers.get('Content-Type') || '';
-            logDebug(`请求成功: ${targetUrl}, Content-Type: ${contentType}, 内容长度: ${content.length}`);
-            return { content, contentType, responseHeaders: response.headers }; // 同时返回原始响应头
-
-        } catch (error) {
-             logDebug(`请求彻底失败: ${targetUrl}: ${error.message}`);
-            // 抛出更详细的错误
-            throw new Error(`请求目标URL失败 ${targetUrl}: ${error.message}`);
         }
+        throw lastErr || new Error(`请求目标URL失败 ${targetUrl}`);
     }
 
     // 判断是否是 M3U8 内容

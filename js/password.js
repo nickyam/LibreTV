@@ -123,7 +123,7 @@ function hidePasswordModal() {
         passwordModal.style.display = 'none';
 
         // 如果启用豆瓣区域则显示豆瓣区域
-        if (localStorage.getItem('doubanEnabled') === 'true') {
+        if (localStorage.getItem('doubanEnabled') !== 'false') {
             document.getElementById('doubanArea').classList.remove('hidden');
             initDouban();
         }

@@ -58,7 +58,7 @@ function initDouban() {
     // 设置豆瓣开关的初始状态
     const doubanToggle = document.getElementById('doubanToggle');
     if (doubanToggle) {
-        const isEnabled = localStorage.getItem('doubanEnabled') === 'true';
+        const isEnabled = localStorage.getItem('doubanEnabled') !== 'false';
         doubanToggle.checked = isEnabled;
         
         // 设置开关外观
@@ -107,7 +107,7 @@ function initDouban() {
     setupDoubanRefreshBtn();
     
     // 初始加载热门内容
-    if (localStorage.getItem('doubanEnabled') === 'true') {
+    if (localStorage.getItem('doubanEnabled') !== 'false') {
         renderRecommend(doubanCurrentTag, doubanPageSize, doubanPageStart);
     }
 }
@@ -117,7 +117,7 @@ function updateDoubanVisibility() {
     const doubanArea = document.getElementById('doubanArea');
     if (!doubanArea) return;
     
-    const isEnabled = localStorage.getItem('doubanEnabled') === 'true';
+    const isEnabled = localStorage.getItem('doubanEnabled') !== 'false';
     const isSearching = document.getElementById('resultsArea') && 
         !document.getElementById('resultsArea').classList.contains('hidden');
     
@@ -282,7 +282,7 @@ function renderDoubanMovieTvSwitch() {
             setupDoubanRefreshBtn();
             
             // 初始加载热门内容
-            if (localStorage.getItem('doubanEnabled') === 'true') {
+            if (localStorage.getItem('doubanEnabled') !== 'false') {
                 renderRecommend(doubanCurrentTag, doubanPageSize, doubanPageStart);
             }
         }
@@ -308,7 +308,7 @@ function renderDoubanMovieTvSwitch() {
             setupDoubanRefreshBtn();
             
             // 初始加载热门内容
-            if (localStorage.getItem('doubanEnabled') === 'true') {
+            if (localStorage.getItem('doubanEnabled') !== 'false') {
                 renderRecommend(doubanCurrentTag, doubanPageSize, doubanPageStart);
             }
         }
@@ -494,6 +494,28 @@ async function fetchDoubanData(url) {
     }
 }
 
+// 豆瓣海报加载失败时的重试与兜底：
+// 1) 先经代理URL带缓存戳重试（代理侧已有退避重试，应对豆瓣按IP并发限流）；
+// 2) 仍失败则尝试一次直连兜底（极少数网络/缓存场景可用）；
+// 3) 最终隐藏破损图标，露出容器占位底色，避免整页破图。
+function doubanImgError(img) {
+    const tries = parseInt(img.dataset.tries || '0', 10);
+    if (tries < 2) {
+        img.dataset.tries = String(tries + 1);
+        const base = (img.getAttribute('src') || '').split('?')[0];
+        if (base) {
+            img.src = base + '?r=' + (tries + 1);
+            return;
+        }
+    }
+    if (!img.dataset.direct) {
+        img.dataset.direct = '1';
+        const fb = img.dataset.fallback;
+        if (fb) { img.src = fb; return; }
+    }
+    img.style.display = 'none';
+}
+
 // 抽取渲染豆瓣卡片的逻辑到单独函数
 function renderDoubanCards(data, container) {
     // 创建文档片段以提高性能
@@ -532,10 +554,11 @@ function renderDoubanCards(data, container) {
 
             // 为不同设备优化卡片布局
             card.innerHTML = `
-                <div class="relative w-full aspect-[2/3] overflow-hidden cursor-pointer" onclick="fillAndSearchWithDouban('${safeTitle}')">
+                <div class="relative w-full aspect-[2/3] overflow-hidden cursor-pointer bg-[#1a1a1a]" onclick="fillAndSearchWithDouban('${safeTitle}')">
                     <img src="${proxiedCoverUrl}" alt="${safeTitle}" 
                         class="w-full h-full object-cover transition-transform duration-500 hover:scale-110"
-                        onerror="this.onerror=null; this.src='${originalCoverUrl}'; this.classList.add('object-contain');"
+                        data-fallback="${originalCoverUrl}"
+                        onerror="doubanImgError(this)"
                         loading="lazy">
                     <div class="absolute inset-0 bg-gradient-to-t from-black to-transparent opacity-60"></div>
                     <div class="absolute bottom-2 left-2 bg-black/70 text-white text-xs px-2 py-1 rounded-sm">
