@@ -24,7 +24,7 @@ const SITE_CONFIG = {
 };
 
 // 源清单版本号：改了 API_SITES 或默认选中源时必须 +1，老用户会自动迁移
-const SOURCES_VERSION = 2;
+const SOURCES_VERSION = 3;
 // 首次访问 / 源清单升级后的默认选中源（均为实测可搜索的精确源）
 const DEFAULT_API_IDS = ['ruyi', 'jisu', 'uku', 'ikun'];
 
@@ -110,11 +110,6 @@ const API_SITES = {
     baidu: {
         api: 'https://api.apibdzy.com/api.php/provide/vod',
         name: '百度云资源'
-    },
-    // 豆瓣海报跳转依赖这个源，上游当前 5xx，先挂着（默认不勾选）
-    dbzy: {
-        api: 'https://dbzy.tv/api.php/provide/vod',
-        name: '豆瓣资源',
     },
     // ==== 以下为 2026-11-25 实测失效，已下线 ====
     // tyyszy:  { api: 'https://tyyszy.com/api.php/provide/vod', name: '天涯资源' },        // 返回「暂不支持搜索」

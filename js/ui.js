@@ -130,6 +130,43 @@ function closeModal() {
     document.getElementById('modalContent').innerHTML = '';
 }
 
+// Escape 关闭最上层浮层：详情弹窗 > 设置面板 > 观看历史。
+// 之前全站没有任何 keydown 监听，桌面端只能靠点空白处关，很别扭。
+// 密码弹窗故意不在此列——它必须输入密码才能过。
+function closeTopmostOverlay() {
+    const modal = document.getElementById('modal');
+    if (modal && !modal.classList.contains('hidden')) {
+        if (typeof closeModal === 'function') closeModal();
+        else modal.classList.add('hidden');
+        return true;
+    }
+
+    const settingsPanel = document.getElementById('settingsPanel');
+    if (settingsPanel && settingsPanel.classList.contains('show')) {
+        settingsPanel.classList.remove('show');
+        settingsPanel.setAttribute('aria-hidden', 'true');
+        return true;
+    }
+
+    const historyPanel = document.getElementById('historyPanel');
+    if (historyPanel && historyPanel.classList.contains('show')) {
+        historyPanel.classList.remove('show');
+        historyPanel.setAttribute('aria-hidden', 'true');
+        return true;
+    }
+
+    return false;
+}
+
+document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape' && e.key !== 'Esc') return;
+    if (e.isComposing) return; // 输入法选词过程中的 Esc 不算
+    if (closeTopmostOverlay()) {
+        e.preventDefault();
+        e.stopPropagation();
+    }
+});
+
 // 获取搜索历史的增强版本 - 支持新旧格式
 function getSearchHistory() {
     try {

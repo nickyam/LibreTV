@@ -198,32 +198,9 @@ async function fillAndSearchWithDouban(title) {
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;');
     
-    // 确保豆瓣资源API被选中
-    if (typeof selectedAPIs !== 'undefined' && !selectedAPIs.includes('dbzy')) {
-        // 在设置中勾选豆瓣资源API复选框
-        const doubanCheckbox = document.querySelector('input[id="api_dbzy"]');
-        if (doubanCheckbox) {
-            doubanCheckbox.checked = true;
-            
-            // 触发updateSelectedAPIs函数以更新状态
-            if (typeof updateSelectedAPIs === 'function') {
-                updateSelectedAPIs();
-            } else {
-                // 如果函数不可用，则手动添加到selectedAPIs
-                selectedAPIs.push('dbzy');
-                localStorage.setItem('selectedAPIs', JSON.stringify(selectedAPIs));
-                
-                // 更新选中API计数（如果有这个元素）
-                const countEl = document.getElementById('selectedAPICount');
-                if (countEl) {
-                    countEl.textContent = selectedAPIs.length;
-                }
-            }
-            
-            showToast('已自动选择豆瓣资源API', 'info');
-        }
-    }
-    
+    // 以前这里会强制勾选「豆瓣资源」(dbzy) 再搜索，理由是它按豆瓣条目匹配。
+    // 但该源 2026-11-25 起整站不可达（连首页都连不上），强制勾选只会让每次
+    // 从豆瓣卡片进来都多一条失败横幅，所以改为直接用当前已选的源搜索。
     // 填充搜索框并执行搜索
     const input = document.getElementById('searchInput');
     if (input) {
