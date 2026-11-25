@@ -402,6 +402,9 @@ function initPlayer(videoUrl) {
         return
     }
 
+    // 换集/换源都从这里进，重置「已提示过跳过广告」的状态
+    resetAdSkipNotice();
+
     // 销毁旧实例
     if (art) {
         art.destroy();
@@ -820,21 +823,33 @@ const AD_TOTAL_RATIO_LIMIT = 0.25;  // 安全阀：广告占比超过 25% 视为
 // 跳过广告的提示
 //
 // 过滤是在 CustomHlsJsLoader 里做的，hls.js 会在 manifest / level 两种 context 上
-// 各调一次，切换清晰度、错误重试时还会再调；直接弹 toast 会连弹好几条。
-// 所以用 600ms 的窗口合并：窗口内取最大值（同一份列表被重复过滤时不会把秒数累加），
-// 窗口结束再弹一次。
+// 各调一次，切换清晰度、错误重试、源站换广告时还会再调；而且每次取到的广告条数
+// 可能不一样（实测同一集第一次 53 秒、第二次 110 秒）。直接弹 toast 会连弹好几条。
+// 所以：600ms 窗口内合并（取最大值，避免同一份列表重复过滤把秒数累加），
+// 且每次播放（initPlayer）只提示一次。
 let adSkipNoticePending = 0;
 let adSkipNoticeTimer = null;
+let adSkipNoticeShown = false;
+
+function resetAdSkipNotice() {
+    adSkipNoticePending = 0;
+    adSkipNoticeShown = false;
+    if (adSkipNoticeTimer) {
+        clearTimeout(adSkipNoticeTimer);
+        adSkipNoticeTimer = null;
+    }
+}
 
 function notifyAdsSkipped(seconds) {
-    if (!(seconds > 0)) return;
+    if (!(seconds > 0) || adSkipNoticeShown) return;
     if (seconds > adSkipNoticePending) adSkipNoticePending = seconds;
     if (adSkipNoticeTimer) return;
     adSkipNoticeTimer = setTimeout(() => {
         const dur = adSkipNoticePending;
         adSkipNoticePending = 0;
         adSkipNoticeTimer = null;
-        if (dur < 1) return; // 不足 1 秒不值得打扰
+        if (dur < 1 || adSkipNoticeShown) return; // 不足 1 秒不值得打扰
+        adSkipNoticeShown = true;
         if (typeof showToast === 'function') {
             showToast(`已跳过 ${Math.round(dur)} 秒广告`, 'success');
         }
