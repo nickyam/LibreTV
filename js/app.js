@@ -855,9 +855,9 @@ async function search() {
             const picRaw = (item.vod_pic || '').toString().trim();
             // 采集站常返回 http 封面，HTTPS 页面会被浏览器当混合内容拦掉（表现为破图）
             const coverSrc = picRaw.startsWith('http://')
-                ? '/proxy/' + encodeURIComponent(picRaw)
+                ? PROXY_URL + encodeURIComponent(picRaw)
                 : picRaw;
-            const hasCover = coverSrc.startsWith('https://') || coverSrc.startsWith('/proxy/');
+            const hasCover = coverSrc.startsWith('https://') || coverSrc.startsWith(PROXY_URL);
 
             return `
                 <div class="card-hover bg-[#111] rounded-lg overflow-hidden cursor-pointer transition-all hover:scale-[1.02] h-full shadow-sm hover:shadow-md" 

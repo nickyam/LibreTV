@@ -107,6 +107,13 @@ export async function onRequest(context) {
     const DEBUG_ENABLED = (env.DEBUG === 'true');
     const CACHE_TTL = parseInt(env.CACHE_TTL || '86400'); // 默认 24 小时
     const MAX_RECURSION = parseInt(env.MAX_RECURSION || '5'); // 默认 5 层
+    // 缓存键版本号：缓存内容语义变化时递增，用于隔离旧条目。
+    // v2 → 修复前二进制被按 UTF-8 解码，KV 与 CDN 里存的是损坏的图片字节，
+    //      旧键（不带版本号）必须整体作废，否则新代码上线也读不到干净数据。
+    const CACHE_KEY_VERSION = 'v2';
+    // 对外暴露的代理路径前缀；前端 config.js 的 PROXY_URL 与 m3u8 重写共用同一版本，
+    // 路径变化同时也是 CDN 边缘缓存的天然隔离手段（缓存键为完整 URL）。
+    const PROXY_PATH_PREFIX = '/proxy/v2/';
     // 广告过滤已移至播放器处理，代理不再执行
     let USER_AGENTS = [ // 提供一个基础的默认值
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -139,9 +146,9 @@ export async function onRequest(context) {
 
     // 从请求路径中提取目标 URL
     function getTargetUrlFromPath(pathname) {
-        // 路径格式: /proxy/经过编码的URL
-        // 例如: /proxy/https%3A%2F%2Fexample.com%2Fplaylist.m3u8
-        const encodedUrl = pathname.replace(/^\/proxy\//, '');
+        // 路径格式: /proxy/v2/经过编码的URL（兼容不带版本号的旧路径 /proxy/经过编码的URL）
+        // 例如: /proxy/v2/https%3A%2F%2Fexample.com%2Fplaylist.m3u8
+        const encodedUrl = pathname.replace(/^\/proxy\/(?:v\d+\/)?/, '');
         if (!encodedUrl) return null;
         try {
             // 解码
@@ -242,10 +249,10 @@ export async function onRequest(context) {
         }
     }
 
-    // 将目标 URL 重写为内部代理路径 (/proxy/...)
+    // 将目标 URL 重写为内部代理路径 (/proxy/v2/...)
     function rewriteUrlToProxy(targetUrl) {
         // 确保目标URL被正确编码，以便作为路径的一部分
-        return `/proxy/${encodeURIComponent(targetUrl)}`;
+        return `${PROXY_PATH_PREFIX}${encodeURIComponent(targetUrl)}`;
     }
 
     // 获取远程内容及其类型（带退避重试，应对豆瓣图床等按频率/IP 限流的 403/418/429/500）
@@ -332,14 +339,18 @@ export async function onRequest(context) {
 
     // 判定响应是否为「文本」，决定按字符串解码还是按字节透传。
     // 缺 Content-Type 时退回按扩展名判断，避免个别不返回类型的图床把图片当文本处理。
-    const TEXTUAL_MIME = /^(text\/|application\/(json|javascript|ecmascript|xml|xhtml\+xml|graphql|vnd\.apple\.mpegurl|x-mpegurl)|image\/svg\+xml)/i;
+    const TEXTUAL_MIME = /^(text\/|application\/(json|javascript|ecmascript|xml|xhtml\+xml|graphql|vnd\.apple\.mpegurl|x-mpegurl)|audio\/(mpegurl|x-mpegurl)|image\/svg\+xml)/i;
     const BINARY_EXT = /\.(jpe?g|png|gif|webp|avif|bmp|ico|svgz|woff2?|ttf|otf|eot|mp4|m4s|ts|m4a|mp3|aac|flac|ogg|webm|mkv|flv|zip|gz|7z|rar|pdf)(\?|#|$)/i;
 
     function isTextualContent(contentType, url) {
+        const cleanUrl = (url || '').split('?')[0].split('#')[0];
+        // 播放列表必须当文本（后续要改写片段地址）。部分源站给的是 audio/mpegurl
+        // 或 application/octet-stream，甚至不给类型，只按 Content-Type 判会漏。
+        if (/\.m3u8?$/i.test(cleanUrl)) return true;
         const ct = (contentType || '').trim();
         if (ct) return TEXTUAL_MIME.test(ct);
         // 没有 Content-Type：有明确的二进制扩展名就按二进制，否则沿用旧行为当文本处理
-        return !BINARY_EXT.test((url || '').split('?')[0]);
+        return !BINARY_EXT.test(cleanUrl);
     }
 
     // 判断是否是 M3U8 内容
@@ -489,7 +500,7 @@ export async function onRequest(context) {
 
         // --- 获取并处理选中的子 M3U8 ---
 
-        const cacheKey = `m3u8_processed:${bestVariantUrl}`; // 使用处理后的缓存键
+        const cacheKey = `m3u8_processed:${CACHE_KEY_VERSION}:${bestVariantUrl}`; // 使用处理后的缓存键
 
         let kvNamespace = null;
         try {
@@ -517,6 +528,10 @@ export async function onRequest(context) {
 
         logDebug(`选择的子列表 (带宽: ${highestBandwidth}): ${bestVariantUrl}`);
         const { content: variantContent, contentType: variantContentType } = await fetchContentWithType(bestVariantUrl);
+
+        if (typeof variantContent !== 'string') {
+            throw new Error(`子列表返回二进制内容，无法作为播放列表改写: ${bestVariantUrl}`);
+        }
 
         if (!isM3u8Content(variantContent, variantContentType)) {
             logDebug(`获取到的子列表 ${bestVariantUrl} 不是 M3U8 内容 (类型: ${variantContentType})。可能直接是媒体文件，返回原始内容。`);
@@ -554,7 +569,7 @@ export async function onRequest(context) {
 
         if (!targetUrl) {
             logDebug(`无效的代理请求路径: ${url.pathname}`);
-            return createResponse("无效的代理请求。路径应为 /proxy/<经过编码的URL>", 400);
+            return createResponse("无效的代理请求。路径应为 /proxy/v2/<经过编码的URL>", 400);
         }
 
         // --- SSRF 防护：禁止代理访问内网/本机/链路本地/云元数据 ---
@@ -566,7 +581,7 @@ export async function onRequest(context) {
         logDebug(`收到代理请求: ${targetUrl}`);
 
         // --- 缓存检查 (KV) ---
-        const cacheKey = `proxy_raw:${targetUrl}`; // 使用原始内容的缓存键
+        const cacheKey = `proxy_raw:${CACHE_KEY_VERSION}:${targetUrl}`; // 使用原始内容的缓存键
         let kvNamespace = null;
         try {
             kvNamespace = env.LIBRETV_PROXY_KV;
@@ -587,7 +602,7 @@ export async function onRequest(context) {
                     try { headers = JSON.parse(cachedData.headers); } catch(e){} // 解析头部
                     const contentType = headers['content-type'] || headers['Content-Type'] || '';
 
-                    if (isM3u8Content(content, contentType)) {
+                    if (typeof content === 'string' && isM3u8Content(content, contentType)) {
                         logDebug(`缓存内容是 M3U8，重新处理: ${targetUrl}`);
                         const processedM3u8 = await processM3u8Content(targetUrl, content, 0, env);
                         return createM3u8Response(processedM3u8);
@@ -628,7 +643,8 @@ export async function onRequest(context) {
         }
 
         // --- 处理响应 ---
-        if (isM3u8Content(content, contentType)) {
+        // 二进制（ArrayBuffer）永远不可能是 M3U8；加类型守卫，宁可原样透传也不要 500
+        if (typeof content === 'string' && isM3u8Content(content, contentType)) {
             logDebug(`内容是 M3U8，开始处理: ${targetUrl}`);
             const processedM3u8 = await processM3u8Content(targetUrl, content, 0, env);
             return createM3u8Response(processedM3u8);

@@ -128,7 +128,7 @@ function resolveUrl(baseUrl, relativeUrl) {
 function rewriteUrlToProxy(targetUrl) {
     if (!targetUrl || typeof targetUrl !== 'string') return '';
     // 返回与 vercel.json 的 "source" 和前端 PROXY_URL 一致的路径
-    return `/proxy/${encodeURIComponent(targetUrl)}`;
+    return `/proxy/v2/${encodeURIComponent(targetUrl)}`;
 }
 
 function getRandomUserAgent() {
@@ -353,6 +353,9 @@ export default async function handler(req, res) {
         if (!encodedUrlPath) {
              throw new Error("无法从请求中确定编码后的目标路径。");
         }
+
+        // 兼容带缓存版本号的路径 /proxy/v2/<enc>（rewrite 会把 v2 作为第一个 path 段传进来）
+        encodedUrlPath = encodedUrlPath.replace(/^v\d+\//, '');
 
         // 解析目标 URL
         targetUrl = getTargetUrlFromPath(encodedUrlPath);

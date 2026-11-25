@@ -81,7 +81,7 @@ function resolveUrl(baseUrl, relativeUrl) {
 function rewriteUrlToProxy(targetUrl) {
     if (!targetUrl || typeof targetUrl !== 'string') return '';
     // Use the path defined in netlify.toml 'from' field
-    return `/proxy/${encodeURIComponent(targetUrl)}`;
+    return `/proxy/v2/${encodeURIComponent(targetUrl)}`;
 }
 
 function getRandomUserAgent() { return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]; }
@@ -182,9 +182,10 @@ export const handler = async (event, context) => {
     // Based on netlify.toml rewrite: from = "/proxy/*" to = "/.netlify/functions/proxy/:splat"
     // The :splat part should be available in event.path after the base path
     let encodedUrlPath = '';
-    const proxyPrefix = '/proxy/'; // Match the 'from' path in netlify.toml
-    if (event.path && event.path.startsWith(proxyPrefix)) {
-        encodedUrlPath = event.path.substring(proxyPrefix.length);
+    // 兼容 /proxy/<enc> 与带缓存版本号的 /proxy/v2/<enc>
+    const proxyMatch = event.path && event.path.match(/^\/proxy\/(?:v\d+\/)?(.+)$/);
+    if (proxyMatch) {
+        encodedUrlPath = proxyMatch[1];
         logDebug(`Extracted encoded path from event.path: ${encodedUrlPath}`);
     } else {
         logDebug(`Could not extract encoded path from event.path: ${event.path}`);

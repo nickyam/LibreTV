@@ -1,5 +1,8 @@
 // 全局常量配置
-const PROXY_URL = '/proxy/';    // 适用于 Cloudflare, Netlify (带重写), Vercel (带重写)
+// 路径里的 v2 是代理缓存版本号，必须与 functions/proxy/[[path]].js 的 PROXY_PATH_PREFIX 一致。
+// 改动原因：v1 时期代理把二进制按 UTF-8 解码后写进了 KV 和 CDN（键为完整 URL），
+// 换路径可以立刻绕开这些投毒缓存，不必等 31 天过期，也不必清 Cloudflare 缓存。
+const PROXY_URL = '/proxy/v2/';    // 适用于 Cloudflare, Netlify (带重写), Vercel (带重写)
 // const HOPLAYER_URL = 'https://hoplayer.com/index.html';
 const SEARCH_HISTORY_KEY = 'videoSearchHistory';
 const MAX_HISTORY_ITEMS = 5;
