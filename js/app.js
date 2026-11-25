@@ -94,6 +94,12 @@ function initAPICheckboxes() {
 
         const checked = selectedAPIs.includes(apiKey);
 
+        // 连续失败的源打红点，省得用户一个个试
+        const failStreak = (typeof getSourceFailStreak === 'function') ? getSourceFailStreak(apiKey) : 0;
+        const healthBadge = failStreak >= 2
+            ? `<span class="ml-1 text-[10px] text-red-500" title="最近连续 ${failStreak} 次无响应，建议取消勾选">●</span>`
+            : '';
+
         const checkbox = document.createElement('div');
         checkbox.className = 'flex items-center';
         checkbox.innerHTML = `
@@ -101,7 +107,7 @@ function initAPICheckboxes() {
                    class="form-checkbox h-3 w-3 text-blue-600 bg-[#222] border border-[#333]" 
                    ${checked ? 'checked' : ''} 
                    data-api="${apiKey}">
-            <label for="api_${apiKey}" class="ml-1 text-xs text-gray-400 truncate">${api.name}</label>
+            <label for="api_${apiKey}" class="ml-1 text-xs text-gray-400 truncate">${api.name}${healthBadge}</label>
         `;
         normaldiv.appendChild(checkbox);
 
@@ -627,6 +633,44 @@ function getCustomApiInfo(customApiIndex) {
     return customAPIs[index];
 }
 
+// 同名跨源聚合：同一部片在多个源的结果合并成一张卡片，避免同一片名刷满整屏
+// 用数组下标传参，避免把影片名拼进 onclick 造成转义/XSS 问题
+let RESULT_GROUPS = [];
+
+function showDetailsForGroup(groupIndex, sourceIndex) {
+    const group = RESULT_GROUPS[groupIndex];
+    if (!group) return;
+    const item = group.sources[sourceIndex] || group.rep;
+    const id = item.vod_id ? item.vod_id.toString().replace(/[^\w-]/g, '') : '';
+    if (!id) {
+        showToast('该来源缺少影片 ID，换个来源试试', 'error');
+        return;
+    }
+    showDetails(id, (item.vod_name || '').toString(), item.source_code || '');
+}
+
+// 把已排序的结果按片名归组，保持首次出现的顺序
+function groupResultsByTitle(results) {
+    const groups = [];
+    const index = new Map();
+    for (const item of results) {
+        const key = (item.vod_name || '').toString().trim().toLowerCase();
+        if (!key) {
+            groups.push({ rep: item, sources: [item] });
+            continue;
+        }
+        const hit = index.get(key);
+        if (hit) {
+            hit.sources.push(item);
+        } else {
+            const group = { rep: item, sources: [item] };
+            index.set(key, group);
+            groups.push(group);
+        }
+    }
+    return groups;
+}
+
 // 搜索功能 - 修改为支持多选API和多页结果
 async function search() {
     // 密码保护校验
@@ -699,10 +743,13 @@ async function search() {
             allResults = allResults.slice(0, AGGREGATED_SEARCH_CONFIG.maxResults);
         }
 
-        // 更新搜索结果计数
+        // 同名跨源聚合：多源同一部片只占一张卡，卡片内可切换来源
+        RESULT_GROUPS = groupResultsByTitle(allResults);
+
+        // 更新搜索结果计数（按影片数算，不是按来源条数）
         const searchResultsCount = document.getElementById('searchResultsCount');
         if (searchResultsCount) {
-            searchResultsCount.textContent = allResults.length;
+            searchResultsCount.textContent = RESULT_GROUPS.length;
         }
 
         // 显示结果区域，调整搜索区域
@@ -719,11 +766,16 @@ async function search() {
         const resultsDiv = document.getElementById('results');
 
         // 失败源提示：把「源挂了」和「真的没有结果」区分开
+        const describeFailure = (f) => {
+            const streak = (typeof getSourceFailStreak === 'function') ? getSourceFailStreak(f.code) : 0;
+            const repeat = streak >= 2 ? `，连续失败 ${streak} 次` : '';
+            return `${f.name}（${f.reason}${repeat}）`;
+        };
         const failureHtml = (typeof SEARCH_FAILURES !== 'undefined' && SEARCH_FAILURES.length > 0)
             ? `<div class="col-span-full mb-1 rounded-lg border border-[#3a2a12] bg-[#241c0f] px-3 py-2 text-xs text-amber-300">
                    <span class="font-medium">${SEARCH_FAILURES.length} 个数据源无响应</span>
-                   <span class="text-amber-200/70">：${SEARCH_FAILURES.map(f => `${f.name}（${f.reason}）`).join('、')}</span>
-                   <span class="text-gray-400">｜已展示其余源的结果，可在设置里更换数据源</span>
+                   <span class="text-amber-200/70">：${SEARCH_FAILURES.map(describeFailure).join('、')}</span>
+                   <span class="text-gray-400">｜已展示其余源的结果，可在设置里取消勾选这些源</span>
                </div>`
             : '';
 
@@ -771,30 +823,49 @@ async function search() {
         }
 
         // 添加XSS保护，使用textContent和属性转义
-        const safeResults = allResults.map(item => {
-            const safeId = item.vod_id ? item.vod_id.toString().replace(/[^\w-]/g, '') : '';
+        const safeResults = RESULT_GROUPS.map((group, groupIndex) => {
+            const item = group.rep;
             const safeName = (item.vod_name || '').toString()
                 .replace(/</g, '&lt;')
                 .replace(/>/g, '&gt;')
                 .replace(/"/g, '&quot;');
-            const sourceInfo = item.source_name ?
-                `<span class="bg-[#222] text-xs px-1.5 py-0.5 rounded-full">${item.source_name}</span>` : '';
-            const sourceCode = item.source_code || '';
+
+            // 来源标签：多源同片时全部列出，点一下就地换源，不用回结果页重搜
+            const multiSource = group.sources.length > 1;
+            const sourceInfo = multiSource
+                ? `<div class="flex flex-wrap items-center gap-1">
+                       <span class="text-[10px] text-gray-500 mr-0.5">${group.sources.length} 个来源</span>
+                       ${group.sources.map((s, si) => {
+                    const chipName = (s.source_name || '').toString().replace(/</g, '&lt;');
+                    const isActive = si === 0;
+                    return `<span class="text-xs px-1.5 py-0.5 rounded-full cursor-pointer transition-colors ${isActive ? 'bg-[#2b3b53] text-blue-300' : 'bg-[#222] text-gray-400 hover:bg-[#2e2e2e] hover:text-gray-200'}"
+                                      onclick="event.stopPropagation();showDetailsForGroup(${groupIndex},${si})"
+                                      title="${isActive ? chipName : '用 ' + chipName + ' 打开'}">${chipName}</span>`;
+                }).join('')}
+                   </div>`
+                : (item.source_name
+                    ? `<span class="bg-[#222] text-xs px-1.5 py-0.5 rounded-full">${(item.source_name || '').toString().replace(/</g, '&lt;')}</span>`
+                    : '');
 
             // 添加API URL属性，用于详情获取
             const apiUrlAttr = item.api_url ?
                 `data-api-url="${item.api_url.replace(/"/g, '&quot;')}"` : '';
 
             // 修改为水平卡片布局，图片在左侧，文本在右侧，并优化样式
-            const hasCover = item.vod_pic && item.vod_pic.startsWith('http');
+            const picRaw = (item.vod_pic || '').toString().trim();
+            // 采集站常返回 http 封面，HTTPS 页面会被浏览器当混合内容拦掉（表现为破图）
+            const coverSrc = picRaw.startsWith('http://')
+                ? '/proxy/' + encodeURIComponent(picRaw)
+                : picRaw;
+            const hasCover = coverSrc.startsWith('https://') || coverSrc.startsWith('/proxy/');
 
             return `
                 <div class="card-hover bg-[#111] rounded-lg overflow-hidden cursor-pointer transition-all hover:scale-[1.02] h-full shadow-sm hover:shadow-md" 
-                     onclick="showDetails('${safeId}','${safeName}','${sourceCode}')" ${apiUrlAttr}>
+                     onclick="showDetailsForGroup(${groupIndex},0)" ${apiUrlAttr}>
                     <div class="flex h-full">
                         ${hasCover ? `
                         <div class="relative flex-shrink-0 search-card-img-container">
-                            <img src="${item.vod_pic}" alt="${safeName}" 
+                            <img src="${coverSrc}" alt="${safeName}" 
                                  class="h-full w-full object-cover transition-transform hover:scale-110" 
                                  onerror="this.onerror=null; this.src='https://via.placeholder.com/300x450?text=无封面'; this.classList.add('object-contain');" 
                                  loading="lazy">

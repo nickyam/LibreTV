@@ -265,22 +265,45 @@ export async function onRequest(context) {
             'Referer': referer
         });
 
-        const MAX_RETRIES = 3;
+        const MAX_RETRIES = 2;
+        // 只有「可能自愈」的响应才值得重试：限流、超时、网关/源站临时故障。
+        // 403 必须留着——豆瓣图床限流时就用 403/418 表达，不重试会直接掉封面。
+        // 404/410/400 这类确定性错误（采集站已下线、接口已改版）重试只是白白拖慢响应。
+        const RETRYABLE_STATUS = new Set([403, 408, 418, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524]);
+        // 采集接口（JSON）给单次尝试加死线，避免一个僵死的源拖满整个请求；
+        // 图片/m3u8/分片不加，慢速网络下断流会直接影响播放。
+        const isJsonApi = /\/api\.php|\/provide\/vod|ac=(videolist|detail)/i.test(targetUrl);
+        const ATTEMPT_TIMEOUT = isJsonApi ? 6000 : 0;
+
         let lastErr;
         for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
             try {
                 logDebug(`请求目标 (尝试 ${attempt + 1}/${MAX_RETRIES}): ${targetUrl}`);
-                const response = await fetch(targetUrl, { headers: buildHeaders(), redirect: 'follow' });
+                const controller = ATTEMPT_TIMEOUT ? new AbortController() : null;
+                const timer = controller ? setTimeout(() => controller.abort(), ATTEMPT_TIMEOUT) : null;
+                let response;
+                try {
+                    response = await fetch(targetUrl, {
+                        headers: buildHeaders(),
+                        redirect: 'follow',
+                        signal: controller ? controller.signal : undefined
+                    });
+                } finally {
+                    if (timer) clearTimeout(timer);
+                }
 
                 if (!response.ok) {
                     const errBody = await response.text().catch(() => '');
                     lastErr = new Error(`HTTP ${response.status}: ${response.statusText}`);
-                    logDebug(`上游返回 ${response.status}，准备退避重试: ${targetUrl}`);
-                    if (attempt < MAX_RETRIES - 1) {
+                    if (RETRYABLE_STATUS.has(response.status) && attempt < MAX_RETRIES - 1) {
+                        logDebug(`上游返回 ${response.status}，准备退避重试: ${targetUrl}`);
                         await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
                         continue;
                     }
-                    throw new Error(`HTTP error ${response.status}: ${response.statusText}. URL: ${targetUrl}. Body: ${errBody.substring(0, 150)}`);
+                    const httpErr = new Error(`HTTP error ${response.status}: ${response.statusText}. URL: ${targetUrl}. Body: ${errBody.substring(0, 150)}`);
+                    // 标记为不可重试，避免被下面的 catch 再次吞进重试循环
+                    httpErr.noRetry = true;
+                    throw httpErr;
                 }
 
                 const content = await response.text();
@@ -290,7 +313,7 @@ export async function onRequest(context) {
             } catch (error) {
                 lastErr = error;
                 logDebug(`请求异常 (尝试 ${attempt + 1}/${MAX_RETRIES}): ${targetUrl}: ${error.message}`);
-                if (attempt < MAX_RETRIES - 1) {
+                if (!error.noRetry && attempt < MAX_RETRIES - 1) {
                     await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
                     continue;
                 }
