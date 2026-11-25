@@ -10,7 +10,9 @@
     "dev": "nodemon server.mjs",
     "start": "node server.mjs",
     "stamp": "node scripts/stamp-assets.mjs",
-    "check:assets": "node scripts/stamp-assets.mjs --check"
+    "check:assets": "node scripts/stamp-assets.mjs --check",
+    "tw:build": "tailwindcss -c tailwind.config.cjs -i tailwind/input.css -o css/tailwind.css --minify",
+    "build": "npm run tw:build && npm run stamp"
   },
   "dependencies": {
     "axios": "^1.9.0",
