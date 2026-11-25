@@ -692,16 +692,26 @@ async function search() {
             }
         });
 
-        // 相关性分级：完全匹配 > 标题包含关键词 > 弱匹配（上游模糊搜索带出的无关项）
-        // 上游采集站的排序本身就带相关性，这里只在同级内保留它的原始顺序，
-        // 不再用 localeCompare 把「2019青春芒果夜」这类弱匹配顶到首屏。
-        const keyword = query.toLowerCase();
+        // 相关性分级 + 过滤：完全匹配 > 标题包含全部关键词 > 其它（视为上游模糊匹配的噪声）
+        // 采集站常按单字模糊匹配（暴风资源搜「甄嬛传」会返回 264 条，只要片名含「甄」
+        // 就算命中，如懿传/北京地铁/爱笑麻瓜秀都被带出来）。以前只做「弱匹配兜底 40 条」
+        // 塞在结果尾部，于是「搜甄嬛传、下面一堆别的片」。现在：只要有相关结果，
+        // 噪声直接丢弃；一条相关都没有时才回退展示，并明确提示这是模糊结果。
+        const normalizeName = (s) => (s || '').toString().toLowerCase()
+            .replace(/[\s\u3000]/g, '')
+            .replace(/[·・:：;；,，.。!！?？'"“”‘’`()（）\[\]【】<>《》\-—_~～/\\|]/g, '');
+        const kwTokens = (query || '').split(/\s+/).map(normalizeName).filter(Boolean);
+        const kwWhole = normalizeName(query);
         const relevanceOf = (item) => {
-            const name = (item.vod_name || '').toLowerCase();
+            const name = normalizeName(item.vod_name);
             if (!name) return 2;
-            if (name === keyword) return 0;
-            if (name.includes(keyword)) return 1;
-            return 2;
+            if (name === kwWhole || name === kwTokens.join('')) return 0;
+            if (kwTokens.length === 0) return 2;
+            // 每个关键词都要命中；4 位数字（年份）允许命中 vod_year，避免「甄嬛传 2011」
+            // 这种搜索把片名里没写年份的结果全判成噪声
+            const year = (item.vod_year || '').toString().trim();
+            const allHit = kwTokens.every(t => name.includes(t) || (/^\d{4}$/.test(t) && year === t));
+            return allHit ? 1 : 2;
         };
 
         allResults.forEach(item => { item._rel = relevanceOf(item); });
@@ -709,10 +719,23 @@ async function search() {
             || ((a._order ?? 0) - (b._order ?? 0))
             || (a.source_name || '').localeCompare(b.source_name || ''));
 
-        // 弱匹配只保留少量兜底，避免单一源的泛匹配结果占满整个结果页
         const strongResults = allResults.filter(item => item._rel < 2);
-        const weakResults = allResults.filter(item => item._rel === 2).slice(0, 40);
-        allResults = strongResults.concat(weakResults);
+        const weakResults = allResults.filter(item => item._rel === 2);
+        // 有相关结果：噪声一条都不留；没相关结果：才退而展示模糊结果（限 40 条）
+        const hiddenWeakCount = strongResults.length > 0
+            ? weakResults.length
+            : Math.max(0, weakResults.length - 40);
+        allResults = strongResults.length > 0 ? strongResults : weakResults.slice(0, 40);
+
+        // 结果说明：解释「为什么少了 / 为什么这些看起来不相关」
+        const escapeText = (s) => (s || '').toString()
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        let resultNotice = '';
+        if (hiddenWeakCount > 0) {
+            resultNotice = strongResults.length > 0
+                ? `已隐藏 ${hiddenWeakCount} 条标题不含「${escapeText(query)}」的无关结果（数据源按关键字模糊匹配带出）`
+                : `没有标题匹配「${escapeText(query)}」的结果，以下为数据源返回的模糊结果（共 ${weakResults.length} 条，仅显示前 ${allResults.length} 条）`;
+        }
 
         // 结果总数上限，防止某个源无视关键词返回全站数据
         if (typeof AGGREGATED_SEARCH_CONFIG !== 'undefined' && AGGREGATED_SEARCH_CONFIG.maxResults
@@ -874,7 +897,10 @@ async function search() {
             `;
         }).join('');
 
-        resultsDiv.innerHTML = failureHtml + safeResults;
+        const noticeHtml = resultNotice
+            ? `<div class="col-span-full mt-1 text-xs text-gray-500">${resultNotice}</div>`
+            : '';
+        resultsDiv.innerHTML = failureHtml + safeResults + noticeHtml;
     } catch (error) {
         console.error('搜索错误:', error);
         if (error.name === 'AbortError') {
