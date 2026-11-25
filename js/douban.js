@@ -517,6 +517,19 @@ function doubanImgError(img) {
 }
 
 // 抽取渲染豆瓣卡片的逻辑到单独函数
+// 把任意字符串安全地嵌入内联事件处理器的 JS 字符串字面量中。
+// 片名里出现单引号（如 Ocean's 8）会直接截断 '...' 导致语法错误、点击无反应，
+// 反斜杠和换行同理。先 JSON.stringify 得到合法 JS 字面量，再按 HTML 属性转义，
+// 浏览器解析属性时会把实体还原回原字符，JS 最终拿到的仍是正确字符串。
+function escapeJsArg(value) {
+    return JSON.stringify(String(value == null ? '' : value))
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 function renderDoubanCards(data, container) {
     // 创建文档片段以提高性能
     const fragment = document.createDocumentFragment();
@@ -536,10 +549,14 @@ function renderDoubanCards(data, container) {
             card.className = "bg-[#111] hover:bg-[#222] transition-all duration-300 rounded-lg overflow-hidden flex flex-col transform hover:scale-105 shadow-md hover:shadow-lg";
             
             // 生成卡片内容，确保安全显示（防止XSS）
-            const safeTitle = item.title
+            const rawTitle = item.title == null ? '' : String(item.title);
+            const safeTitle = rawTitle
                 .replace(/</g, '&lt;')
                 .replace(/>/g, '&gt;')
                 .replace(/"/g, '&quot;');
+
+            // 传给内联 onclick 的参数：独立做 JS 字面量转义，不能复用 safeTitle
+            const titleArg = escapeJsArg(rawTitle);
             
             const safeRate = (item.rate || "暂无")
                 .replace(/</g, '&lt;')
@@ -554,7 +571,7 @@ function renderDoubanCards(data, container) {
 
             // 为不同设备优化卡片布局
             card.innerHTML = `
-                <div class="relative w-full aspect-[2/3] overflow-hidden cursor-pointer bg-[#1a1a1a]" onclick="fillAndSearchWithDouban('${safeTitle}')">
+                <div class="relative w-full aspect-[2/3] overflow-hidden cursor-pointer bg-[#1a1a1a]" onclick="fillAndSearchWithDouban(${titleArg})">
                     <img src="${proxiedCoverUrl}" alt="${safeTitle}" 
                         class="w-full h-full object-cover transition-transform duration-500 hover:scale-110"
                         data-fallback="${originalCoverUrl}"
@@ -571,7 +588,7 @@ function renderDoubanCards(data, container) {
                     </div>
                 </div>
                 <div class="p-2 text-center bg-[#111]">
-                    <button onclick="fillAndSearchWithDouban('${safeTitle}')" 
+                    <button onclick="fillAndSearchWithDouban(${titleArg})" 
                             class="text-sm font-medium text-white truncate w-full hover:text-pink-400 transition"
                             title="${safeTitle}">
                         ${safeTitle}

@@ -103,7 +103,13 @@ async function searchByAPIAndKeyWord(apiId, query) {
             return [];
         }
 
-        if (!data || !Array.isArray(data.list)) {
+        // 空结果的合法形态有两种：list 为 []，或 list 为 null 且 total/pagecount 为 0。
+        // 如意等源在「一条都没搜到」时返回 "list": null，不能当成源故障，
+        // 否则用户搜冷门片会看到「N 个数据源无响应」的误报。
+        const emptyResult = data && (data.list === null || data.list === undefined)
+            && !Number(data.total) && !Number(data.pagecount);
+
+        if (!data || (!Array.isArray(data.list) && !emptyResult)) {
             markSourceFailed(apiId, apiName, '返回格式异常');
             return [];
         }
@@ -111,7 +117,7 @@ async function searchByAPIAndKeyWord(apiId, query) {
         // 能正常返回合法结构就算这个源活着（即使是空结果）
         bumpSourceHealth(apiId, true);
 
-        if (data.list.length === 0) {
+        if (emptyResult || data.list.length === 0) {
             // 搜索成功但无结果，不算源故障
             return [];
         }

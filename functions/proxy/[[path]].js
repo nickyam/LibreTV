@@ -306,10 +306,17 @@ export async function onRequest(context) {
                     throw httpErr;
                 }
 
-                const content = await response.text();
+                // 关键：必须按字节读取，不能一律 response.text()。
+                // 图片/字体/音视频分片是二进制，按 UTF-8 解码会把非法字节替换成 U+FFFD，
+                // 内容体积膨胀且无法解码（实测 JPEG 19137B → 34282B，浏览器直接判为破图）。
+                // 这里先取 arrayBuffer：文本类解码成字符串（下游还要做 m3u8 改写），
+                // 二进制原样透传给 Response，由浏览器自行解码。
+                const buffer = await response.arrayBuffer();
                 const contentType = response.headers.get('Content-Type') || '';
-                logDebug(`请求成功: ${targetUrl}, Content-Type: ${contentType}, 长度: ${content.length}`);
-                return { content, contentType, responseHeaders: response.headers };
+                const textual = isTextualContent(contentType, targetUrl);
+                const content = textual ? new TextDecoder('utf-8').decode(buffer) : buffer;
+                logDebug(`请求成功: ${targetUrl}, Content-Type: ${contentType}, 长度: ${buffer.byteLength}, 文本: ${textual}`);
+                return { content, contentType, responseHeaders: response.headers, binary: !textual };
             } catch (error) {
                 lastErr = error;
                 logDebug(`请求异常 (尝试 ${attempt + 1}/${MAX_RETRIES}): ${targetUrl}: ${error.message}`);
@@ -321,6 +328,18 @@ export async function onRequest(context) {
             }
         }
         throw lastErr || new Error(`请求目标URL失败 ${targetUrl}`);
+    }
+
+    // 判定响应是否为「文本」，决定按字符串解码还是按字节透传。
+    // 缺 Content-Type 时退回按扩展名判断，避免个别不返回类型的图床把图片当文本处理。
+    const TEXTUAL_MIME = /^(text\/|application\/(json|javascript|ecmascript|xml|xhtml\+xml|graphql|vnd\.apple\.mpegurl|x-mpegurl)|image\/svg\+xml)/i;
+    const BINARY_EXT = /\.(jpe?g|png|gif|webp|avif|bmp|ico|svgz|woff2?|ttf|otf|eot|mp4|m4s|ts|m4a|mp3|aac|flac|ogg|webm|mkv|flv|zip|gz|7z|rar|pdf)(\?|#|$)/i;
+
+    function isTextualContent(contentType, url) {
+        const ct = (contentType || '').trim();
+        if (ct) return TEXTUAL_MIME.test(ct);
+        // 没有 Content-Type：有明确的二进制扩展名就按二进制，否则沿用旧行为当文本处理
+        return !BINARY_EXT.test((url || '').split('?')[0]);
     }
 
     // 判断是否是 M3U8 内容
@@ -574,7 +593,10 @@ export async function onRequest(context) {
                         return createM3u8Response(processedM3u8);
                     } else {
                         logDebug(`从缓存返回非 M3U8 内容: ${targetUrl}`);
-                        return createResponse(content, 200, new Headers(headers));
+                        const cachedHeaders = new Headers(headers);
+                        cachedHeaders.delete('content-encoding');
+                        cachedHeaders.delete('content-length');
+                        return createResponse(content, 200, cachedHeaders);
                     }
                 } else {
                      logDebug(`[缓存未命中] 原始内容: ${targetUrl}`);
@@ -586,10 +608,12 @@ export async function onRequest(context) {
         }
 
         // --- 实际请求 ---
-        const { content, contentType, responseHeaders } = await fetchContentWithType(targetUrl);
+        const { content, contentType, responseHeaders, binary } = await fetchContentWithType(targetUrl);
 
         // --- 写入缓存 (KV) ---
-        if (kvNamespace) {
+        // KV 以 JSON 文本存储，二进制无法安全序列化（会被 stringify 成 {}），
+        // 因此只缓存文本内容；图片等交给响应头的 Cache-Control 让 CDN 缓存。
+        if (kvNamespace && !binary) {
              try {
                  const headersToCache = {};
                  responseHeaders.forEach((value, key) => { headersToCache[key.toLowerCase()] = value; });
@@ -612,6 +636,10 @@ export async function onRequest(context) {
             logDebug(`内容不是 M3U8 (类型: ${contentType})，直接返回: ${targetUrl}`);
             const finalHeaders = new Headers(responseHeaders);
             finalHeaders.set('Cache-Control', `public, max-age=${CACHE_TTL}`);
+            // fetch 已完成解压，且长度由 Response 重新计算；沿用上游的
+            // content-encoding / content-length 会与实际字节数不符，导致响应被截断。
+            finalHeaders.delete('content-encoding');
+            finalHeaders.delete('content-length');
             // 添加 CORS 头，确保非 M3U8 内容也能跨域访问（例如图片、字幕文件等）
             finalHeaders.set("Access-Control-Allow-Origin", "*");
             finalHeaders.set("Access-Control-Allow-Methods", "GET, HEAD, POST, OPTIONS");
