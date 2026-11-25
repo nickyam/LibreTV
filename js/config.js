@@ -20,96 +20,108 @@ const SITE_CONFIG = {
     version: '1.0.3'
 };
 
+// 源清单版本号：改了 API_SITES 或默认选中源时必须 +1，老用户会自动迁移
+const SOURCES_VERSION = 2;
+// 首次访问 / 源清单升级后的默认选中源（均为实测可搜索的精确源）
+const DEFAULT_API_IDS = ['ruyi', 'jisu', 'uku', 'ikun'];
+
 // API站点配置
+// 2026-11-25 全量实测（走本站 /proxy/ 链路，关键词「甄嬛传/庆余年/沙丘」三轮验证）：
+// 只保留能返回 JSON 且真正支持 wd 关键词的源；失效源原因写在下方注释里，恢复后可再启用。
 const API_SITES = {
-    dyttzy: {
-        api: 'http://caiji.dyttzyapi.com/api.php/provide/vod',
-        name: '电影天堂资源',
-        detail: 'http://caiji.dyttzyapi.com', 
-    },
     ruyi: {
         api: 'https://cj.rycjapi.com/api.php/provide/vod',
         name: '如意资源',
     },
-    bfzy: {
-        api: 'https://bfzyapi.com/api.php/provide/vod',
-        name: '暴风资源',
-    },
-    tyyszy: {
-        api: 'https://tyyszy.com/api.php/provide/vod',
-        name: '天涯资源',
-    },
-    // xiaomaomi: {
-    //     api: 'https://zy.xiaomaomi.cc/api.php/provide/vod',
-    //     name: '小猫咪资源',
-    // },
-    ffzy: {
-        api: 'http://ffzy5.tv/api.php/provide/vod',
-        name: '非凡影视',
-        detail: 'http://ffzy5.tv', 
-    },
-    heimuer: {
-        api: 'https://json.heimuer.xyz/api.php/provide/vod',
-        name: '黑木耳',
-        detail: 'https://heimuer.tv', 
-    },
-    zy360: {
-        api: 'https://360zy.com/api.php/provide/vod',
-        name: '360资源',
-    },
-    iqiyi: {
-        api: 'https://www.iqiyizyapi.com/api.php/provide/vod',
-        name: 'iqiyi资源',
-    },
-    wolong: {
-        api: 'https://wolongzyw.com/api.php/provide/vod',
-        name: '卧龙资源',
-    }, 
-    hwba: {
-        api: 'https://cjhwba.com/api.php/provide/vod',
-        name: '华为吧资源',
-    },
     jisu: {
         api: 'https://jszyapi.com/api.php/provide/vod',
         name: '极速资源',
-        detail: 'https://jszyapi.com', 
+        detail: 'https://jszyapi.com',
     },
-    dbzy: {
-        api: 'https://dbzy.tv/api.php/provide/vod',
-        name: '豆瓣资源',
+    hhzy: {
+        api: 'https://hhzyapi.com/api.php/provide/vod',
+        name: '豪华资源',
     },
-    mozhua: {
-        api: 'https://mozhuazy.com/api.php/provide/vod',
-        name: '魔爪资源',
+    subo: {
+        api: 'https://subocaiji.com/api.php/provide/vod',
+        name: '速播资源',
     },
-    mdzy: {
-        api: 'https://www.mdzyapi.com/api.php/provide/vod',
-        name: '魔都资源',
-    },
-    zuid: {
-        api: 'https://api.zuidapi.com/api.php/provide/vod',
-        name: '最大资源'
-    },
-    yinghua: {
-        api: 'https://m3u8.apiyhzy.com/api.php/provide/vod',
-        name: '樱花资源'
-    },
-    baidu: {
-        api: 'https://api.apibdzy.com/api.php/provide/vod',
-        name: '百度云资源'
-    },
-    wujin: {
-        api: 'https://api.wujinapi.me/api.php/provide/vod',
-        name: '无尽资源'
-    },
-    wwzy: {
-        api: 'https://wwzy.tv/api.php/provide/vod',
-        name: '旺旺短剧'
+    uku: {
+        api: 'https://api.ukuapi88.com/api.php/provide/vod',
+        name: 'U酷影视',
     },
     ikun: {
         api: 'https://ikunzyapi.com/api.php/provide/vod',
         name: 'iKun资源'
     },
+    hongniu: {
+        api: 'https://www.hongniuzy2.com/api.php/provide/vod',
+        name: '红牛资源',
+    },
+    wujin: {
+        api: 'https://api.wujinapi.com/api.php/provide/vod',
+        name: '无尽资源'
+    },
+    xinlang: {
+        api: 'https://api.xinlangapi.com/xinlangapi.php/provide/vod',
+        name: '新浪资源',
+    },
+    ffzy: {
+        api: 'http://ffzy5.tv/api.php/provide/vod',
+        name: '非凡影视',
+        detail: 'http://ffzy5.tv', 
+    },
+    ffzy2: {
+        api: 'http://cj.ffzyapi.com/api.php/provide/vod',
+        name: '非凡资源',
+    },
+    zy360: {
+        api: 'https://360zy.com/api.php/provide/vod',
+        name: '360资源',
+    },
+    zy360b: {
+        api: 'https://360zyzz.com/api.php/provide/vod',
+        name: '360资源B',
+    },
+    iqiyi: {
+        api: 'https://iqiyizyapi.com/api.php/provide/vod',
+        name: 'iqiyi资源',
+    },
+    dyttzy: {
+        api: 'http://caiji.dyttzyapi.com/api.php/provide/vod',
+        name: '电影天堂资源',
+        detail: 'http://caiji.dyttzyapi.com', 
+    },
+    bfzy: {
+        api: 'https://bfzyapi.com/api.php/provide/vod',
+        name: '暴风资源',
+    },
+    lz: {
+        api: 'http://cj.lziapi.com/api.php/provide/vod',
+        name: '量子资源',
+    },
+    mdzy: {
+        api: 'https://www.mdzyapi.com/api.php/provide/vod',
+        name: '魔都资源',
+    },
+    baidu: {
+        api: 'https://api.apibdzy.com/api.php/provide/vod',
+        name: '百度云资源'
+    },
+    // 豆瓣海报跳转依赖这个源，上游当前 5xx，先挂着（默认不勾选）
+    dbzy: {
+        api: 'https://dbzy.tv/api.php/provide/vod',
+        name: '豆瓣资源',
+    },
+    // ==== 以下为 2026-11-25 实测失效，已下线 ====
+    // tyyszy:  { api: 'https://tyyszy.com/api.php/provide/vod', name: '天涯资源' },        // 返回「暂不支持搜索」
+    // heimuer: { api: 'https://json.heimuer.xyz/api.php/provide/vod', name: '黑木耳' },      // 域名已换成网页，返回 HTML
+    // wolong:  { api: 'https://wolongzyw.com/api.php/provide/vod', name: '卧龙资源' },       // 返回 HTML 欢迎页
+    // hwba:    { api: 'https://cjhwba.com/api.php/provide/vod', name: '华为吧资源' },         // 返回 HTML
+    // mozhua:  { api: 'https://mozhuazy.com/api.php/provide/vod', name: '魔爪资源' },         // 返回 HTML
+    // wwzy:    { api: 'https://wwzy.tv/api.php/provide/vod', name: '旺旺短剧' },             // 返回 HTML
+    // yinghua: { api: 'https://m3u8.apiyhzy.com/api.php/provide/vod', name: '樱花资源' },     // 上游 5xx
+    // zuid:    { api: 'https://api.zuidapi.com/api.php/provide/vod', name: '最大资源' },     // 忽略 wd，返回全站 12.6 万条
     testSource: {
         api: 'https://www.example.com/api.php/provide/vod',
         name: '空内容测试源',
@@ -195,7 +207,8 @@ const API_CONFIG = {
         // 只拼接参数部分，不再包含 /api.php/provide/vod/
         path: '?ac=videolist&wd=',
         pagePath: '?ac=videolist&wd={query}&pg={page}',
-        maxPages: 50, // 最大获取页数
+        maxPages: 5, // 每个源最多抓取的页数（抓取页数取「源站 pagecount」与它的较小值）
+                     // 上游重构版默认也是 5：调大会让请求量按 源数 × 页数 放大，拖慢搜索
         headers: {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
             'Accept': 'application/json'

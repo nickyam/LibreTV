@@ -1,5 +1,5 @@
 // 全局变量
-let selectedAPIs = JSON.parse(localStorage.getItem('selectedAPIs') || '["tyyszy","dyttzy", "bfzy", "ruyi"]'); // 默认选中资源
+let selectedAPIs = JSON.parse(localStorage.getItem('selectedAPIs') || JSON.stringify(DEFAULT_API_IDS)); // 默认选中资源
 let customAPIs = JSON.parse(localStorage.getItem('customAPIs') || '[]'); // 存储自定义API列表
 
 // 添加当前播放的集数索引
@@ -13,6 +13,18 @@ let episodesReversed = false;
 
 // 页面初始化
 document.addEventListener('DOMContentLoaded', function () {
+    // 源清单迁移：丢掉已下线的源 id，让老用户也能用上新源（必须早于复选框渲染）
+    if (localStorage.getItem('sourcesVersion') !== String(SOURCES_VERSION)) {
+        const known = (selectedAPIs || []).filter(id => id.startsWith('custom_') || !!API_SITES[id]);
+        const removedCount = (selectedAPIs || []).length - known.length;
+        selectedAPIs = known.length > 0 ? known : [...DEFAULT_API_IDS];
+        localStorage.setItem('selectedAPIs', JSON.stringify(selectedAPIs));
+        localStorage.setItem('sourcesVersion', String(SOURCES_VERSION));
+        if (removedCount > 0) {
+            setTimeout(() => showToast(`已剔除 ${removedCount} 个失效数据源，可在设置里重新勾选`, 'info'), 800);
+        }
+    }
+
     // 初始化API复选框
     initAPICheckboxes();
 
@@ -28,7 +40,7 @@ document.addEventListener('DOMContentLoaded', function () {
     // 设置默认API选择（如果是第一次加载）
     if (!localStorage.getItem('hasInitializedDefaults')) {
         // 默认选中资源
-        selectedAPIs = ["tyyszy", "bfzy", "dyttzy", "ruyi"];
+        selectedAPIs = [...DEFAULT_API_IDS];
         localStorage.setItem('selectedAPIs', JSON.stringify(selectedAPIs));
 
         // 默认选中过滤开关
@@ -636,6 +648,7 @@ async function search() {
         return;
     }
 
+    resetSearchFailures();
     showLoading();
 
     try {
@@ -658,15 +671,33 @@ async function search() {
             }
         });
 
-        // 对搜索结果进行排序：按名称优先，名称相同时按接口源排序
-        allResults.sort((a, b) => {
-            // 首先按照视频名称排序
-            const nameCompare = (a.vod_name || '').localeCompare(b.vod_name || '');
-            if (nameCompare !== 0) return nameCompare;
-            
-            // 如果名称相同，则按照来源排序
-            return (a.source_name || '').localeCompare(b.source_name || '');
-        });
+        // 相关性分级：完全匹配 > 标题包含关键词 > 弱匹配（上游模糊搜索带出的无关项）
+        // 上游采集站的排序本身就带相关性，这里只在同级内保留它的原始顺序，
+        // 不再用 localeCompare 把「2019青春芒果夜」这类弱匹配顶到首屏。
+        const keyword = query.toLowerCase();
+        const relevanceOf = (item) => {
+            const name = (item.vod_name || '').toLowerCase();
+            if (!name) return 2;
+            if (name === keyword) return 0;
+            if (name.includes(keyword)) return 1;
+            return 2;
+        };
+
+        allResults.forEach(item => { item._rel = relevanceOf(item); });
+        allResults.sort((a, b) => (a._rel - b._rel)
+            || ((a._order ?? 0) - (b._order ?? 0))
+            || (a.source_name || '').localeCompare(b.source_name || ''));
+
+        // 弱匹配只保留少量兜底，避免单一源的泛匹配结果占满整个结果页
+        const strongResults = allResults.filter(item => item._rel < 2);
+        const weakResults = allResults.filter(item => item._rel === 2).slice(0, 40);
+        allResults = strongResults.concat(weakResults);
+
+        // 结果总数上限，防止某个源无视关键词返回全站数据
+        if (typeof AGGREGATED_SEARCH_CONFIG !== 'undefined' && AGGREGATED_SEARCH_CONFIG.maxResults
+            && allResults.length > AGGREGATED_SEARCH_CONFIG.maxResults) {
+            allResults = allResults.slice(0, AGGREGATED_SEARCH_CONFIG.maxResults);
+        }
 
         // 更新搜索结果计数
         const searchResultsCount = document.getElementById('searchResultsCount');
@@ -687,9 +718,18 @@ async function search() {
 
         const resultsDiv = document.getElementById('results');
 
+        // 失败源提示：把「源挂了」和「真的没有结果」区分开
+        const failureHtml = (typeof SEARCH_FAILURES !== 'undefined' && SEARCH_FAILURES.length > 0)
+            ? `<div class="col-span-full mb-1 rounded-lg border border-[#3a2a12] bg-[#241c0f] px-3 py-2 text-xs text-amber-300">
+                   <span class="font-medium">${SEARCH_FAILURES.length} 个数据源无响应</span>
+                   <span class="text-amber-200/70">：${SEARCH_FAILURES.map(f => `${f.name}（${f.reason}）`).join('、')}</span>
+                   <span class="text-gray-400">｜已展示其余源的结果，可在设置里更换数据源</span>
+               </div>`
+            : '';
+
         // 如果没有结果
         if (!allResults || allResults.length === 0) {
-            resultsDiv.innerHTML = `
+            resultsDiv.innerHTML = failureHtml + `
                 <div class="col-span-full text-center py-16">
                     <svg class="mx-auto h-12 w-12 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
@@ -799,7 +839,7 @@ async function search() {
             `;
         }).join('');
 
-        resultsDiv.innerHTML = safeResults;
+        resultsDiv.innerHTML = failureHtml + safeResults;
     } catch (error) {
         console.error('搜索错误:', error);
         if (error.name === 'AbortError') {
