@@ -1,3 +1,41 @@
+// 从 maccms 的 vod_play_url / vod_play_from 里挑出可播的集数地址
+//
+// 一个片子可能有多组播放源（$$$ 分隔），比如 U酷是「ukyun$$$ukm3u8」、天堂是
+// 「dytt$$$dyttm3u8」。第 0 组常常是分享页（/play/xxx、/share/xxx，返回 HTML），
+// 直接交给 hls.js 只会加载失败（表现就是「点了没反应 / 一直转圈」）；m3u8 那一组
+// 才是可播直链。所以优先按 play_from 里的 m3u8 标记挑，挑不到再退回第 0 组。
+function pickEpisodes(videoDetail) {
+    if (!videoDetail || !videoDetail.vod_play_url) return [];
+    const playSources = videoDetail.vod_play_url.split('$$$');
+    const playFroms = (videoDetail.vod_play_from || '').split('$$$');
+
+    const looksM3u8 = (group) => {
+        const first = (group || '').split('#')[0].split('$')[1] || '';
+        return /\.m3u8(\?|$)/i.test(first);
+    };
+
+    let pickIndex = -1;
+    for (let i = 0; i < playSources.length; i++) {
+        if (/m3u8/i.test(playFroms[i] || '') && looksM3u8(playSources[i])) {
+            pickIndex = i;
+            break;
+        }
+    }
+    if (pickIndex === -1) {
+        const anyM3u8 = playSources.findIndex(looksM3u8);
+        if (anyM3u8 !== -1) pickIndex = anyM3u8;
+    }
+    if (pickIndex === -1) pickIndex = 0;
+
+    return (playSources[pickIndex] || '')
+        .split('#')
+        .map(ep => {
+            const parts = ep.split('$');
+            return parts.length > 1 ? parts[1] : '';
+        })
+        .filter(url => url && (url.startsWith('http://') || url.startsWith('https://')));
+}
+
 // 改进的API请求处理函数
 async function handleApiRequest(url) {
     const customApi = url.searchParams.get('customApi') || '';
@@ -135,27 +173,9 @@ async function handleApiRequest(url) {
                 // 获取第一个匹配的视频详情
                 const videoDetail = data.list[0];
                 
-                // 提取播放地址
-                let episodes = [];
-                
-                if (videoDetail.vod_play_url) {
-                    // 分割不同播放源
-                    const playSources = videoDetail.vod_play_url.split('$$$');
-                    
-                    // 提取第一个播放源的集数（通常为主要源）
-                    if (playSources.length > 0) {
-                        const mainSource = playSources[0];
-                        const episodeList = mainSource.split('#');
-                        
-                        // 从每个集数中提取URL
-                        episodes = episodeList.map(ep => {
-                            const parts = ep.split('$');
-                            // 返回URL部分(通常是第二部分，如果有的话)
-                            return parts.length > 1 ? parts[1] : '';
-                        }).filter(url => url && (url.startsWith('http://') || url.startsWith('https://')));
-                    }
-                }
-                
+                // 提取播放地址（优先 m3u8 组，见 pickEpisodes）
+                let episodes = pickEpisodes(videoDetail);
+
                 // 如果没有找到播放地址，尝试使用正则表达式查找m3u8链接
                 if (episodes.length === 0 && videoDetail.vod_content) {
                     const matches = videoDetail.vod_content.match(M3U8_PATTERN) || [];
@@ -263,6 +283,48 @@ async function handleCustomApiSpecialDetail(id, customApi) {
 
 // 通用特殊源详情处理函数
 async function handleSpecialSourceDetail(id, sourceCode) {
+    // 先试标准详情接口：配了 detail 的源（极速/非凡/电影天堂）当年是因为 API 不返回
+    // 详情才改成抓 HTML 的，现在它们基本都支持 ac=detail&ids=，直接给出 vod_play_url
+    // 分组，既稳又不用解页面。实测电影天堂抓 HTML 会解析不出集数（弹「未找到播放资源」），
+    // 而 ac=detail 能正常拿到 dyttm3u8 组。
+    try {
+        const apiBase = API_SITES[sourceCode].api;
+        const apiDetailUrl = `${apiBase}?ac=detail&ids=${encodeURIComponent(id)}`;
+        const resp = await fetch(PROXY_URL + encodeURIComponent(apiDetailUrl), {
+            headers: API_CONFIG.detail.headers,
+            signal: typeof AbortSignal !== 'undefined' && AbortSignal.timeout
+                ? AbortSignal.timeout(8000)
+                : undefined
+        });
+        if (resp.ok) {
+            const json = await resp.json();
+            const item = (json.list || [])[0];
+            const eps = pickEpisodes(item);
+            if (eps.length > 0) {
+                return JSON.stringify({
+                    code: 200,
+                    episodes: eps,
+                    detailUrl: apiDetailUrl,
+                    videoInfo: {
+                        title: item.vod_name,
+                        cover: item.vod_pic,
+                        desc: item.vod_content,
+                        type: item.type_name,
+                        year: item.vod_year,
+                        area: item.vod_area,
+                        director: item.vod_director,
+                        actor: item.vod_actor,
+                        remarks: item.vod_remarks,
+                        source_name: API_SITES[sourceCode].name,
+                        source_code: sourceCode
+                    }
+                });
+            }
+        }
+    } catch (apiErr) {
+        // 接口不通就继续走下面的 HTML 兜底
+    }
+
     try {
         // 构建详情页URL（使用配置中的detail URL而不是api URL）
         const detailUrl = `${API_SITES[sourceCode].detail}/index.php/vod/detail/id/${id}.html`;

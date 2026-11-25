@@ -803,24 +803,82 @@ class CustomHlsJsLoader extends Hls.DefaultConfig.loader {
     }
 }
 
-// 过滤可疑的广告内容
-function filterAdsFromM3U8(m3u8Content, strictMode = false) {
-    if (!m3u8Content) return '';
+// 分片广告过滤
+//
+// 采集站的做法是在 m3u8 里整段插入赌博广告（澳门新葡京之类）：正片分片的时间戳
+// 是连续的，广告块自成一套时间轴（从 0 开始），两边用 #EXT-X-DISCONTINUITY 隔开。
+// 实测暴风资源第 1 集：正片 0000074.ts PTS 297.77~301.83、0000075.ts 301.76~307.88
+// 首尾相接，中间夹 9 个 /video/adjump/time/*.ts，PTS 1.46~27.24。
+//
+// 旧实现只把 #EXT-X-DISCONTINUITY 这一行删掉：广告照播，而且抹掉分隔符后
+// hls.js 认为时间轴倒退，紧随其后的正片会被丢弃——用户看到的就是「广告放完，
+// 剧情少了一段，进度条却一直在走」。改成按分组识别、整块删除。
+const AD_URI_RE = /(?:^|[/_.-])(adjump|advert\w*|ads?|adv|gg|guanggao|promo|shoufa)(?:[/_.-]|$)/i;
+const AD_BLOCK_MAX_SECONDS = 60;    // 插入式广告块普遍 15~30 秒
+const AD_TOTAL_RATIO_LIMIT = 0.25;  // 安全阀：广告占比超过 25% 视为误判，宁可不滤
 
-    // 按行分割M3U8内容
+function filterAdsFromM3U8(m3u8Content) {
+    if (!m3u8Content || m3u8Content.indexOf('#EXTM3U') === -1) return m3u8Content || '';
+    // 主列表只指向子列表，不动
+    if (m3u8Content.indexOf('#EXT-X-STREAM-INF') !== -1) return m3u8Content;
+
     const lines = m3u8Content.split('\n');
-    const filteredLines = [];
+    const groups = [];
+    let g = { lines: [], segs: [], dur: 0 };
 
     for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-
-        // 只过滤#EXT-X-DISCONTINUITY标识
-        if (!line.includes('#EXT-X-DISCONTINUITY')) {
-            filteredLines.push(line);
+        const raw = lines[i];
+        const t = raw.trim();
+        if (t.indexOf('#EXT-X-DISCONTINUITY') === 0) {
+            groups.push(g);
+            g = { lines: [], segs: [], dur: 0 };
+            continue;
+        }
+        g.lines.push(raw);
+        if (t.indexOf('#EXTINF:') === 0) {
+            const d = parseFloat(t.slice(8).split(',')[0]);
+            if (!isNaN(d)) g.dur += d;
+        } else if (t && t.charAt(0) !== '#') {
+            g.segs.push(t);
         }
     }
+    groups.push(g);
 
-    return filteredLines.join('\n');
+    if (!groups.some(x => x.segs.length > 0)) return m3u8Content;
+
+    const totalDur = groups.reduce((a, x) => a + x.dur, 0);
+    const maxDur = Math.max(...groups.map(x => x.dur));
+
+    const isAdGroup = (x) => {
+        if (!x.segs.length) return false;
+        // 1) 明确的广告路径标记（暴风/量子这类直接把广告放在 /adjump/ 下）
+        for (const s of x.segs) {
+            let d = s;
+            try { d = decodeURIComponent(s); } catch (e) { }
+            if (AD_URI_RE.test(d)) return true;
+        }
+        // 2) 插入式广告：整组特别短，且同一列表里存在远长于它的正片块
+        return x.dur > 0 && x.dur <= AD_BLOCK_MAX_SECONDS && maxDur >= 120;
+    };
+
+    const kept = groups.filter(x => !isAdGroup(x));
+    const removedGroups = groups.length - kept.length;
+    if (removedGroups === 0) return m3u8Content;
+
+    const removedDur = groups.filter(isAdGroup).reduce((a, x) => a + x.dur, 0);
+    if (totalDur > 0 && removedDur / totalDur > AD_TOTAL_RATIO_LIMIT) {
+        // 疑似误判（整条片子都很短，或本来就是短片合集），保持原样
+        return m3u8Content;
+    }
+
+    // 保留原有的分隔符：正片各段仍是独立编码单元，去掉分隔符反而会丢帧
+    const out = [];
+    kept.forEach((x, idx) => {
+        if (idx > 0) out.push('#EXT-X-DISCONTINUITY');
+        for (const l of x.lines) out.push(l);
+    });
+    console.log(`[广告过滤] 移除 ${removedGroups} 个广告分组，共 ${removedDur.toFixed(1)} 秒`);
+    return out.join('\n');
 }
 
 
