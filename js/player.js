@@ -817,6 +817,30 @@ const AD_URI_RE = /(?:^|[/_.-])(adjump|advert\w*|ads?|adv|gg|guanggao|promo|shou
 const AD_BLOCK_MAX_SECONDS = 60;    // 插入式广告块普遍 15~30 秒
 const AD_TOTAL_RATIO_LIMIT = 0.25;  // 安全阀：广告占比超过 25% 视为误判，宁可不滤
 
+// 跳过广告的提示
+//
+// 过滤是在 CustomHlsJsLoader 里做的，hls.js 会在 manifest / level 两种 context 上
+// 各调一次，切换清晰度、错误重试时还会再调；直接弹 toast 会连弹好几条。
+// 所以用 600ms 的窗口合并：窗口内取最大值（同一份列表被重复过滤时不会把秒数累加），
+// 窗口结束再弹一次。
+let adSkipNoticePending = 0;
+let adSkipNoticeTimer = null;
+
+function notifyAdsSkipped(seconds) {
+    if (!(seconds > 0)) return;
+    if (seconds > adSkipNoticePending) adSkipNoticePending = seconds;
+    if (adSkipNoticeTimer) return;
+    adSkipNoticeTimer = setTimeout(() => {
+        const dur = adSkipNoticePending;
+        adSkipNoticePending = 0;
+        adSkipNoticeTimer = null;
+        if (dur < 1) return; // 不足 1 秒不值得打扰
+        if (typeof showToast === 'function') {
+            showToast(`已跳过 ${Math.round(dur)} 秒广告`, 'success');
+        }
+    }, 600);
+}
+
 function filterAdsFromM3U8(m3u8Content) {
     if (!m3u8Content || m3u8Content.indexOf('#EXTM3U') === -1) return m3u8Content || '';
     // 主列表只指向子列表，不动
@@ -878,6 +902,7 @@ function filterAdsFromM3U8(m3u8Content) {
         for (const l of x.lines) out.push(l);
     });
     console.log(`[广告过滤] 移除 ${removedGroups} 个广告分组，共 ${removedDur.toFixed(1)} 秒`);
+    notifyAdsSkipped(removedDur);
     return out.join('\n');
 }
 
