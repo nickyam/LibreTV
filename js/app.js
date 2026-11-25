@@ -633,42 +633,19 @@ function getCustomApiInfo(customApiIndex) {
     return customAPIs[index];
 }
 
-// 同名跨源聚合：同一部片在多个源的结果合并成一张卡片，避免同一片名刷满整屏
-// 用数组下标传参，避免把影片名拼进 onclick 造成转义/XSS 问题
-let RESULT_GROUPS = [];
+// 结果列表：一条采集结果一张卡，不做跨源合并（同一部片在几个源就显示几张卡，
+// 由用户自己挑源）。用数组下标传参，避免把影片名拼进 onclick 造成转义/XSS 问题。
+let RESULT_ITEMS = [];
 
-function showDetailsForGroup(groupIndex, sourceIndex) {
-    const group = RESULT_GROUPS[groupIndex];
-    if (!group) return;
-    const item = group.sources[sourceIndex] || group.rep;
+function showDetailsForItem(itemIndex) {
+    const item = RESULT_ITEMS[itemIndex];
+    if (!item) return;
     const id = item.vod_id ? item.vod_id.toString().replace(/[^\w-]/g, '') : '';
     if (!id) {
         showToast('该来源缺少影片 ID，换个来源试试', 'error');
         return;
     }
     showDetails(id, (item.vod_name || '').toString(), item.source_code || '');
-}
-
-// 把已排序的结果按片名归组，保持首次出现的顺序
-function groupResultsByTitle(results) {
-    const groups = [];
-    const index = new Map();
-    for (const item of results) {
-        const key = (item.vod_name || '').toString().trim().toLowerCase();
-        if (!key) {
-            groups.push({ rep: item, sources: [item] });
-            continue;
-        }
-        const hit = index.get(key);
-        if (hit) {
-            hit.sources.push(item);
-        } else {
-            const group = { rep: item, sources: [item] };
-            index.set(key, group);
-            groups.push(group);
-        }
-    }
-    return groups;
 }
 
 // 搜索功能 - 修改为支持多选API和多页结果
@@ -743,13 +720,13 @@ async function search() {
             allResults = allResults.slice(0, AGGREGATED_SEARCH_CONFIG.maxResults);
         }
 
-        // 同名跨源聚合：多源同一部片只占一张卡，卡片内可切换来源
-        RESULT_GROUPS = groupResultsByTitle(allResults);
+        // 一条结果一张卡，不合并跨源同名
+        RESULT_ITEMS = allResults;
 
-        // 更新搜索结果计数（按影片数算，不是按来源条数）
+        // 更新搜索结果计数（按结果条数算）
         const searchResultsCount = document.getElementById('searchResultsCount');
         if (searchResultsCount) {
-            searchResultsCount.textContent = RESULT_GROUPS.length;
+            searchResultsCount.textContent = allResults.length;
         }
 
         // 显示结果区域，调整搜索区域
@@ -823,29 +800,16 @@ async function search() {
         }
 
         // 添加XSS保护，使用textContent和属性转义
-        const safeResults = RESULT_GROUPS.map((group, groupIndex) => {
-            const item = group.rep;
+        const safeResults = RESULT_ITEMS.map((item, itemIndex) => {
             const safeName = (item.vod_name || '').toString()
                 .replace(/</g, '&lt;')
                 .replace(/>/g, '&gt;')
                 .replace(/"/g, '&quot;');
 
-            // 来源标签：多源同片时全部列出，点一下就地换源，不用回结果页重搜
-            const multiSource = group.sources.length > 1;
-            const sourceInfo = multiSource
-                ? `<div class="flex flex-wrap items-center gap-1">
-                       <span class="text-[10px] text-gray-500 mr-0.5">${group.sources.length} 个来源</span>
-                       ${group.sources.map((s, si) => {
-                    const chipName = (s.source_name || '').toString().replace(/</g, '&lt;');
-                    const isActive = si === 0;
-                    return `<span class="text-xs px-1.5 py-0.5 rounded-full cursor-pointer transition-colors ${isActive ? 'bg-[#2b3b53] text-blue-300' : 'bg-[#222] text-gray-400 hover:bg-[#2e2e2e] hover:text-gray-200'}"
-                                      onclick="event.stopPropagation();showDetailsForGroup(${groupIndex},${si})"
-                                      title="${isActive ? chipName : '用 ' + chipName + ' 打开'}">${chipName}</span>`;
-                }).join('')}
-                   </div>`
-                : (item.source_name
-                    ? `<span class="bg-[#222] text-xs px-1.5 py-0.5 rounded-full">${(item.source_name || '').toString().replace(/</g, '&lt;')}</span>`
-                    : '');
+            // 来源标签：一条结果一个源，直接标明是哪家，不做跨源合并
+            const sourceInfo = item.source_name
+                ? `<span class="bg-[#222] text-xs px-1.5 py-0.5 rounded-full">${(item.source_name || '').toString().replace(/</g, '&lt;')}</span>`
+                : '';
 
             // 添加API URL属性，用于详情获取
             const apiUrlAttr = item.api_url ?
@@ -861,7 +825,7 @@ async function search() {
 
             return `
                 <div class="card-hover bg-[#111] rounded-lg overflow-hidden cursor-pointer transition-all hover:scale-[1.02] h-full shadow-sm hover:shadow-md" 
-                     onclick="showDetailsForGroup(${groupIndex},0)" ${apiUrlAttr}>
+                     onclick="showDetailsForItem(${itemIndex})" ${apiUrlAttr}>
                     <div class="flex h-full">
                         ${hasCover ? `
                         <div class="relative flex-shrink-0 search-card-img-container">
